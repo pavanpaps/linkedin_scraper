@@ -1,7 +1,6 @@
 """
-linkedin_scraper.py - Core LinkedIn scraping logic
-This is the main scraper that combines all modules
-FIXED VERSION - Properly waits for job details panel to update
+linkedin_scraper.py - Multi-URL LinkedIn Scraper
+FIXED: Robust waiting for details panel to update with correct job
 """
 
 import time
@@ -12,10 +11,10 @@ from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 import re
 
-# Import our modules
+# Import modules
 from config import Config
 from web_driver import WebDriverManager
 from job_extractor import JobExtractor
@@ -24,27 +23,28 @@ from job_filters import JobFilter
 from storage import JobStorage
 from database import JobDatabase
 from reports import ReportGenerator
+from pid_manager import PIDManager
 
 logger = logging.getLogger(__name__)
 
 
 def random_delay(min_sec=2, max_sec=5):
-    """Random delay to avoid detection"""
+    """Random delay"""
     time.sleep(random.uniform(min_sec, max_sec))
 
 
 class LinkedInScraper:
-    """Main LinkedIn job scraper"""
+    """Main LinkedIn job scraper with multi-URL support"""
     
     def __init__(self, config_file='config.json', headless=False, use_cookies=True):
         # Load configuration
+        self.pid_manager = PIDManager()
+        self.pid_manager.create_pid_file()
         self.config = Config(config_file)
         
         # Initialize components
         self.web_driver = WebDriverManager(headless=headless, use_cookies=use_cookies)
-        self.job_extractor = JobExtractor(
-            default_location=self.config.get_job_config().get('location', 'Bengaluru, Karnataka, India')
-        )
+        self.job_extractor = JobExtractor(default_location="Location not specified")
         
         telegram_config = self.config.get_telegram_config()
         self.notifier = TelegramNotifier(
@@ -55,26 +55,35 @@ class LinkedInScraper:
         self.job_filter = JobFilter(self.config.get_filters())
         self.storage = JobStorage()
         
-        # Initialize database (enhanced feature)
+        # Initialize database
         self.db = JobDatabase()
         self.report_generator = ReportGenerator(self.db)
         
         # Settings
         self.process_recommendations = self.config.should_process_recommendations()
         
-        # CSS selectors for job cards
+        # CSS selectors
         self.job_card_selectors = [
             "li.scaffold-layout__list-item",
             "li.jobs-search-results__list-item",
             "div.job-card-container",
         ]
         
-        # Periodic report tracking
+        # Report tracking
         self.last_periodic_report = datetime.now()
-        self.periodic_report_interval = 6  # hours
+        self.periodic_report_interval = 6
         
+        # Get search URLs
+        self.search_urls = self.config.get_search_urls()
+        
+        logger.info("=" * 70)
         logger.info("LinkedIn Scraper initialized")
+        logger.info(f"Search URLs configured: {len(self.search_urls)}")
+        for i, url in enumerate(self.search_urls, 1):
+            desc = self.config.get_url_description(url)
+            logger.info(f"  {i}. {desc}")
         logger.info(f"Filters: {self.job_filter.get_filter_summary()}")
+        logger.info("=" * 70)
     
     def login(self):
         """Login to LinkedIn"""
@@ -86,201 +95,237 @@ class LinkedInScraper:
         )
     
     def check_no_jobs_page(self, html_source):
-        """Check if current page shows 'No matching jobs found'"""
+        """Check if page shows 'No matching jobs found'"""
         try:
             soup = BeautifulSoup(html_source, 'html.parser')
-            
             no_jobs_indicators = [
                 soup.find('h1', string=re.compile(r'No matching jobs found', re.IGNORECASE)),
                 soup.find('div', string=re.compile(r'No matching jobs found', re.IGNORECASE)),
-                soup.find(string=re.compile(r'Try removing filters or rephrasing your search', re.IGNORECASE))
             ]
-            
             return any(no_jobs_indicators)
         except:
             return False
     
     def find_job_elements(self):
-        """Find job card elements on the page"""
+        """Find job card elements"""
         for selector in self.job_card_selectors:
             try:
                 elements = self.web_driver.find_elements(By.CSS_SELECTOR, selector)
                 if elements:
-                    logger.info(f"Found {len(elements)} job elements with: {selector}")
+                    logger.info(f"Found {len(elements)} job elements")
                     return elements
-                else:
-                    logger.debug(f"No elements with: {selector}")
             except Exception as e:
                 logger.debug(f"Error with {selector}: {e}")
         return []
     
     def is_recommendation_divider(self, element_text):
-        """Check if element is the recommendations divider"""
+        """Check if element is recommendations divider"""
         return ("We've found more results" in element_text or 
                 "share similar criteria" in element_text)
     
-    def scrape_page(self, page_num):
+    def wait_for_details_panel_update(self, expected_job_id, max_attempts=30):
         """
-        Scrape a single page of job listings
-        
-        Returns:
-            Tuple of (jobs_list, should_stop)
+        Wait for details panel to update with the correct job
+        Returns: (success, actual_job_id, html_source)
         """
-        url = self.config.build_search_url(page_num)
+        for attempt in range(max_attempts):
+            try:
+                time.sleep(0.5)  # Small delay between checks
+                
+                # Get current state
+                current_url = self.web_driver.driver.current_url
+                html_source = self.web_driver.get_page_source()
+                
+                # Extract job ID from URL
+                url_job_id = self.job_extractor.extract_job_id_from_url(current_url)
+                
+                # Also verify the HTML contains the expected job ID
+                soup = BeautifulSoup(html_source, 'html.parser')
+                
+                # Check if artdeco structure has loaded with new content
+                title_elem = soup.find('div', class_='artdeco-entity-lockup__title')
+                
+                # Verify job ID matches both in URL and content
+                if url_job_id == expected_job_id and title_elem:
+                    # Additional verification: check if H1 tag exists with real content
+                    h1_elem = soup.find('h1')
+                    if h1_elem:
+                        h1_text = h1_elem.get_text(strip=True)
+                        # Make sure it's not a generic title
+                        if len(h1_text) > 5 and 'notification' not in h1_text.lower():
+                            logger.debug(f"✓ Panel loaded correctly (attempt {attempt + 1})")
+                            return True, url_job_id, html_source
+                
+                logger.debug(f"Waiting for panel update... (attempt {attempt + 1}/{max_attempts})")
+                
+            except StaleElementReferenceException:
+                logger.debug(f"Stale element, retrying...")
+                continue
+            except Exception as e:
+                logger.debug(f"Error checking panel: {e}")
+                continue
         
-        logger.info(f"{'='*70}")
-        logger.info(f"SCRAPING PAGE {page_num}")
+        logger.warning(f"Panel did not update after {max_attempts} attempts")
+        return False, None, None
+    
+    def scrape_url_pages(self, base_url, url_index, max_pages=10):
+        """
+        Scrape all pages for a specific search URL
+        FIXED: Robust waiting for details panel
+        """
+        url_desc = self.config.get_url_description(base_url)
+        logger.info(f"\n{'='*70}")
+        logger.info(f"SEARCH #{url_index}: {url_desc}")
         logger.info(f"{'='*70}")
         
-        try:
-            logger.info(f"Navigating to page {page_num}...")
-            self.web_driver.navigate_to(url)
+        all_jobs = []
+        page_num = 1
+        
+        while page_num <= max_pages:
+            # Build paginated URL
+            page_url = self.config.add_pagination_to_url(base_url, page_num)
             
-            logger.info("Waiting for jobs to load...")
-            time.sleep(8)
+            logger.info(f"\n{'─'*70}")
+            logger.info(f"Search #{url_index} - Page {page_num}")
+            logger.info(f"{'─'*70}")
             
-            html_source = self.web_driver.get_page_source()
-            
-            # Check if this is a "no jobs found" page
-            if self.check_no_jobs_page(html_source):
-                logger.info(f"No matching jobs found on page {page_num}")
-                return [], True
-            
-            # Scroll to load all jobs
-            logger.info("Scrolling to load all jobs...")
-            for i in range(5):
-                self.web_driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                random_delay(1.5, 2.5)
-            
-            # Take screenshot for first page only
-            if page_num == 1:
-                self.web_driver.save_screenshot('linkedin_debug.png')
-            
-            # Find job elements
-            logger.info("Searching for job card elements...")
-            job_elements = self.find_job_elements()
-            
-            if not job_elements:
-                logger.warning(f"No job elements found on page {page_num}")
-                return [], True
-            
-            logger.info(f"Processing {len(job_elements)} jobs on page {page_num}...")
-            
-            page_jobs = []
-            found_divider = False
-            last_extracted_job_id = None  # Track to avoid duplicates
-            
-            for idx, job_element in enumerate(job_elements):
-                try:
-                    # Check for recommendation divider
-                    is_recommendation = False
+            try:
+                # Navigate to page
+                logger.info("Loading page...")
+                self.web_driver.navigate_to(page_url)
+                time.sleep(8)
+                
+                html_source = self.web_driver.get_page_source()
+                
+                # Check if no jobs
+                if self.check_no_jobs_page(html_source):
+                    logger.info(f"No more jobs for this search")
+                    break
+                
+                # Scroll to load all jobs
+                for i in range(5):
+                    self.web_driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    random_delay(1.5, 2.5)
+                
+                # Find job elements
+                job_elements = self.find_job_elements()
+                
+                if not job_elements:
+                    logger.warning("No job elements found")
+                    break
+                
+                logger.info(f"Processing {len(job_elements)} jobs...")
+                
+                page_jobs = []
+                found_divider = False
+                processed_job_ids = set()  # Track processed jobs to avoid duplicates
+                
+                for idx, job_element in enumerate(job_elements):
                     try:
-                        element_text = job_element.text
-                        if self.is_recommendation_divider(element_text):
-                            found_divider = True
-                            if not self.process_recommendations:
-                                logger.info(f"Found 'more results' divider at position {idx+1}")
-                                logger.info("Stopping - not processing recommendations")
-                                break
-                            else:
-                                logger.info("Found 'more results' divider - continuing with recommendations...")
+                        # Check for recommendations
+                        is_recommendation = False
+                        try:
+                            element_text = job_element.text
+                            if self.is_recommendation_divider(element_text):
+                                found_divider = True
+                                if not self.process_recommendations:
+                                    logger.info("Reached recommendations - stopping")
+                                    return all_jobs + page_jobs
                                 is_recommendation = True
                                 continue
-                        
-                        if found_divider:
-                            is_recommendation = True
-                    except:
-                        pass
-                    
-                    # Scroll job card into view
-                    self.web_driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", job_element)
-                    random_delay(0.3, 0.6)
-                    
-                    # Click the job card
-                    try:
-                        job_element.click()
-                        random_delay(0.5, 0.8)
-                    except:
-                        try:
-                            link = job_element.find_element(By.CSS_SELECTOR, "a")
-                            link.click()
-                            random_delay(0.5, 0.8)
-                        except:
-                            logger.debug(f"[{idx+1}] Could not click")
-                            continue
-                    
-                    # Get job ID from URL
-                    current_url = self.web_driver.driver.current_url
-                    job_id = self.job_extractor.extract_job_id_from_url(current_url)
-                    
-                    if not job_id:
-                        logger.debug(f"[{idx+1}] No job ID in URL")
-                        continue
-                    
-                    # Skip if this is the same as the last job (panel didn't update)
-                    if job_id == last_extracted_job_id:
-                        logger.debug(f"[{idx+1}] Duplicate job ID {job_id} - skipping")
-                        random_delay(0.5, 1.0)
-                        continue
-                    
-                    job_url = f"https://www.linkedin.com/jobs/view/{job_id}"
-                    
-                    # Wait for the correct job details to load
-                    try:
-                        # Wait for details panel to exist
-                        WebDriverWait(self.web_driver.driver, 5).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "div.jobs-details, section.jobs-details__main-content"))
-                        )
-                        
-                        # CRITICAL: Wait for URL to confirm it's the right job
-                        panel_loaded = False
-                        for retry in range(10):
-                            time.sleep(0.3)
-                            check_url = self.web_driver.driver.current_url
-                            check_job_id = self.job_extractor.extract_job_id_from_url(check_url)
                             
-                            if check_job_id == job_id:
-                                panel_loaded = True
-                                break
+                            if found_divider:
+                                is_recommendation = True
+                        except:
+                            pass
                         
-                        if not panel_loaded:
-                            logger.debug(f"[{idx+1}] Panel didn't load for job {job_id}")
-                            continue
-                        
-                        # Extra delay for DOM stability
-                        random_delay(0.3, 0.5)
-                        
-                        html_source = self.web_driver.get_page_source()
-                        
-                        # Extract from details panel
-                        job_details = self.job_extractor.extract_from_details_panel(
-                            html_source, 
-                            debug=(idx < 3)
+                        # Scroll into view
+                        self.web_driver.execute_script(
+                            "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", 
+                            job_element
                         )
+                        random_delay(0.8, 1.2)
                         
-                        # Verify we didn't get duplicate data
-                        if len(page_jobs) > 0:
-                            last_job = page_jobs[-1]
-                            if (job_details['title'] == last_job['title'] and 
-                                job_details['company'] == last_job['company'] and
-                                job_id != last_job['job_id']):
-                                logger.debug(f"[{idx+1}] Duplicate data detected - skipping")
+                        # Click the job card
+                        try:
+                            job_element.click()
+                        except:
+                            try:
+                                link = job_element.find_element(By.CSS_SELECTOR, "a")
+                                link.click()
+                            except:
+                                logger.debug(f"Could not click job {idx+1}")
                                 continue
                         
-                        # Debug if company not found
-                        if job_details['company'] == 'Not specified' and idx < 3:
-                            logger.warning(f"Company not found for job {job_id}")
-                            self.job_extractor.debug_company_extraction(html_source, job_id)
+                        # Wait a bit after click
+                        time.sleep(1.5)
                         
-                        if not job_details['title'] or len(job_details['title']) < 5:
-                            logger.debug(f"[{idx+1}] No valid title")
+                        # Get expected job ID from URL
+                        current_url = self.web_driver.driver.current_url
+                        expected_job_id = self.job_extractor.extract_job_id_from_url(current_url)
+                        
+                        if not expected_job_id:
+                            logger.debug(f"Could not extract job ID from URL")
+                            continue
+                        
+                        # Skip if already processed
+                        if expected_job_id in processed_job_ids:
+                            logger.debug(f"Job {expected_job_id} already processed, skipping")
+                            continue
+                        
+                        # CRITICAL: Wait for details panel to update with correct job
+                        success, actual_job_id, html_source = self.wait_for_details_panel_update(expected_job_id)
+                        
+                        if not success or actual_job_id != expected_job_id:
+                            logger.debug(f"Failed to load correct job details for {expected_job_id}")
+                            continue
+                        
+                        job_id = actual_job_id
+                        job_url = f"https://www.linkedin.com/jobs/view/{job_id}"
+                        
+                        # Extra wait for content stabilization
+                        time.sleep(1.0)
+                        
+                        # Get fresh HTML source one more time
+                        html_source = self.web_driver.get_page_source()
+                        
+                        # Extract job details
+                        enable_debug = (idx < 3 and page_num == 1)
+                        
+                        if enable_debug:
+                            logger.info(f"\n🔍 DEBUGGING JOB #{idx+1}")
+                            self.job_extractor.debug_extraction(
+                                html_source, 
+                                job_id,
+                                current_url=current_url
+                            )
+                        
+                        # Auto-detect search type from URL
+                        search_type = self.job_extractor.detect_search_type(current_url)
+                        
+                        job_details = self.job_extractor.extract_from_details_panel(
+                            html_source,
+                            debug=enable_debug,
+                            search_type=search_type
+                        )
+                        
+                        # Validate extraction - skip if title is too short or contains artifacts
+                        title = job_details.get('title', '')
+                        if not title or len(title) < 5:
+                            logger.debug(f"Invalid title extracted, skipping")
+                            continue
+                        
+                        # Check for common extraction artifacts
+                        title_lower = title.lower()
+                        if any(artifact in title_lower for artifact in ['followers', 'with verification', 'data engineer i data engineer i']):
+                            logger.debug(f"Title contains artifacts: {title}, skipping")
                             continue
                         
                         # Display
-                        job_type = "[RECOMMENDATION]" if is_recommendation else "[DIRECT MATCH]"
-                        company_display = f" at {job_details['company']}" if job_details['company'] != 'Not specified' else ""
-                        logger.info(f"[{len(page_jobs)+1}] Found: {job_details['title'][:45]}{company_display}")
-                        logger.info(f"     {job_type} | Job ID: {job_id}")
+                        job_type = "[REC]" if is_recommendation else "[MATCH]"
+                        company = job_details['company'] if job_details['company'] != 'Not specified' else ''
+                        separator = ' @ ' if company else ''
+                        logger.info(f"  [{len(page_jobs)+1}] {job_details['title'][:50]}{separator}{company[:25]} {job_type}")
                         
                         # Store
                         job_data = {
@@ -291,59 +336,132 @@ class LinkedInScraper:
                             'job_id': job_id,
                             'is_recommendation': is_recommendation,
                             'page': page_num,
+                            'search_url': url_desc,
                             'scraped_at': datetime.now().isoformat()
                         }
                         
-                        # Add metadata if available
                         if 'work_type' in job_details:
                             job_data['work_type'] = job_details['work_type']
-                        if 'insight' in job_details:
-                            job_data['insight'] = job_details['insight']
                         
                         page_jobs.append(job_data)
-                        last_extracted_job_id = job_id  # Remember this job
+                        processed_job_ids.add(job_id)
                         
-                    except TimeoutException:
-                        logger.debug(f"[{idx+1}] Details panel timeout")
+                    except Exception as e:
+                        logger.debug(f"Error on job {idx+1}: {e}")
                         continue
-                    
-                except Exception as e:
-                    logger.debug(f"[{idx+1}] Error: {e}")
-                    continue
-            
-            logger.info(f"Page {page_num}: Processed {len(page_jobs)} jobs")
-            
-            # Return jobs and whether to continue
-            should_continue = len(page_jobs) > 0
-            return page_jobs, not should_continue
-            
-        except Exception as e:
-            logger.error(f"Error on page {page_num}: {e}")
-            self.storage.increment_errors()
-            return [], True
+                
+                logger.info(f"Extracted {len(page_jobs)} jobs from page {page_num}")
+                all_jobs.extend(page_jobs)
+                
+                # Stop if no jobs found
+                if len(page_jobs) == 0:
+                    logger.info("No jobs extracted - stopping pagination")
+                    break
+                
+                # Continue to next page
+                page_num += 1
+                if page_num <= max_pages:
+                    logger.info(f"Moving to page {page_num}...")
+                    random_delay(3, 5)
+                
+            except Exception as e:
+                logger.error(f"Error on page {page_num}: {e}")
+                break
+        
+        logger.info(f"\nSearch #{url_index} complete: {len(all_jobs)} total jobs")
+        return all_jobs
     
-    def process_and_notify_jobs(self, page_jobs, page_num):
+    def scrape_all_urls(self):
         """
-        Process jobs: filter, save to DB, and notify
+        Scrape all configured search URLs
         
         Returns:
-            Tuple of (new_jobs_count, notifications_sent)
+            Tuple of (all_jobs, run_stats)
         """
+        start_time = datetime.now()
+        run_id = self.db.start_scrape_run()
+        
+        run_stats = {
+            'jobs_found': 0,
+            'new_jobs': 0,
+            'notifications_sent': 0,
+            'errors': 0,
+            'pages_scraped': 0,
+            'searches_completed': 0,
+            'duration': 0
+        }
+        
+        all_jobs = []
+        
+        try:
+            # Login once
+            if not self.web_driver.logged_in:
+                if not self.login():
+                    logger.error("Login failed")
+                    self.db.complete_scrape_run(run_id, run_stats)
+                    return [], run_stats
+            
+            # Scrape each URL
+            for url_index, search_url in enumerate(self.search_urls, 1):
+                logger.info(f"\n{'█'*70}")
+                logger.info(f"STARTING SEARCH {url_index}/{len(self.search_urls)}")
+                logger.info(f"{'█'*70}")
+                
+                url_jobs = self.scrape_url_pages(search_url, url_index)
+                
+                if url_jobs:
+                    all_jobs.extend(url_jobs)
+                    run_stats['searches_completed'] += 1
+                    
+                    # Process and notify jobs from this URL
+                    new_count, notif_count = self.process_and_notify_jobs(url_jobs)
+                    run_stats['new_jobs'] += new_count
+                    run_stats['notifications_sent'] += notif_count
+                
+                # Delay between different searches
+                if url_index < len(self.search_urls):
+                    logger.info(f"\nPreparing next search...")
+                    random_delay(5, 8)
+            
+            run_stats['jobs_found'] = len(all_jobs)
+            
+        except Exception as e:
+            logger.error(f"Error during scraping: {e}")
+            run_stats['errors'] += 1
+        
+        # Calculate duration
+        end_time = datetime.now()
+        run_stats['duration'] = (end_time - start_time).total_seconds()
+        
+        # Complete run
+        self.db.complete_scrape_run(run_id, run_stats)
+        
+        logger.info(f"\n{'█'*70}")
+        logger.info(f"ALL SEARCHES COMPLETE")
+        logger.info(f"Total jobs: {len(all_jobs)}")
+        logger.info(f"New jobs: {run_stats['new_jobs']}")
+        logger.info(f"Duration: {run_stats['duration']:.1f}s")
+        logger.info(f"{'█'*70}\n")
+        
+        return all_jobs, run_stats
+    
+    def process_and_notify_jobs(self, jobs):
+        """Process and notify jobs"""
         new_jobs_count = 0
         notifications_sent = 0
         
-        for job in page_jobs:
-            # Apply filters
+        for job in jobs:
+            # Filter
             if not self.job_filter.should_notify(job):
                 continue
             
-            # Save to database
+            # Save to DB
             is_new = self.db.add_job(job)
             
             if is_new and not self.storage.is_job_seen(job['url']):
                 new_jobs_count += 1
                 
-                # Send notification
+                # Notify
                 success = self.notifier.send_job_notification(job)
                 
                 if success:
@@ -354,69 +472,14 @@ class LinkedInScraper:
                     self.db.mark_notified(job['job_id'])
                     
                     company = job['company'] if job['company'] != 'Not specified' else ''
-                    logger.info(f"  ✅ Notified: {job['title'][:40]} - {company}")
-                else:
-                    logger.warning(f"  ❌ Failed to notify: {job['title'][:40]}")
+                    logger.info(f"  ✅ Notified: {job['title'][:35]} - {company[:20]}")
                 
                 random_delay(1.5, 2.5)
         
         return new_jobs_count, notifications_sent
     
-    def scrape_all_pages(self):
-        """
-        Scrape all pages until no more jobs found
-        
-        Returns:
-            Tuple of (all_jobs, run_stats)
-        """
-        # Start tracking this run
-        run_id = self.db.start_scrape_run()
-        
-        run_stats = {
-            'jobs_found': 0,
-            'new_jobs': 0,
-            'notifications_sent': 0,
-            'errors': 0,
-            'pages_scraped': 0,
-            'duration': 0
-        }
-        
-        all_jobs = []
-        page_num = 1
-        
-        while True:
-            page_jobs, should_stop = self.scrape_page(page_num)
-            all_jobs.extend(page_jobs)
-            run_stats['pages_scraped'] = page_num
-            run_stats['jobs_found'] += len(page_jobs)
-            
-            # Process and notify jobs from this page
-            new_count, notif_count = self.process_and_notify_jobs(page_jobs, page_num)
-            run_stats['new_jobs'] += new_count
-            run_stats['notifications_sent'] += notif_count
-            
-            # Check if we should stop
-            if should_stop:
-                logger.info(f"Stopping pagination after page {page_num}")
-                break
-            
-            # Move to next page
-            logger.info(f"Moving to page {page_num + 1} in 3-5 seconds...")
-            random_delay(3, 5)
-            page_num += 1
-        
-        # Complete the run
-        self.db.complete_scrape_run(run_id, run_stats)
-        
-        logger.info(f"{'='*70}")
-        logger.info(f"TOTAL: {len(all_jobs)} jobs across {page_num} page(s)")
-        logger.info(f"{'='*70}")
-        
-        return all_jobs, run_stats
-    
     def send_reports(self, run_stats, jobs_data):
-        """Send reports after scraping"""
-        # Send run report
+        """Send reports"""
         if jobs_data:
             try:
                 report = self.report_generator.generate_run_report(run_stats, jobs_data)
@@ -425,10 +488,9 @@ class LinkedInScraper:
             except Exception as e:
                 logger.error(f"Failed to send run report: {e}")
         
-        # Check if periodic report is due
-        hours_since_last = (datetime.now() - self.last_periodic_report).total_seconds() / 3600
-        
-        if hours_since_last >= self.periodic_report_interval:
+        # Check periodic report
+        hours_since = (datetime.now() - self.last_periodic_report).total_seconds() / 3600
+        if hours_since >= self.periodic_report_interval:
             try:
                 report = self.report_generator.generate_periodic_report(self.periodic_report_interval)
                 if report:
@@ -439,35 +501,22 @@ class LinkedInScraper:
                 logger.error(f"Failed to send periodic report: {e}")
     
     def run(self, interval_minutes=30):
-        """
-        Main run loop
-        
-        Args:
-            interval_minutes: Minutes between scrape runs
-        """
+        """Main run loop"""
         logger.info("=" * 70)
-        logger.info("LinkedIn Job Scraper Started")
+        logger.info("Multi-URL LinkedIn Job Scraper")
         logger.info("=" * 70)
+        logger.info(f"Configured searches: {len(self.search_urls)}")
         logger.info(f"Check interval: Every {interval_minutes} minutes")
-        logger.info(f"Process recommendations: {self.process_recommendations}")
-        logger.info(f"Database: {self.db.db_file}")
         logger.info("=" * 70)
         
         try:
             while True:
                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                logger.info(f"\n[{timestamp}] Starting job search...")
-                logger.info("-" * 70)
+                logger.info(f"\n[{timestamp}] Starting scrape cycle...")
                 
                 try:
-                    # Login if needed
-                    if not self.web_driver.logged_in:
-                        if not self.login():
-                            logger.error("Login failed - will retry next cycle")
-                            continue
-                    
-                    # Scrape all pages
-                    current_jobs, run_stats = self.scrape_all_pages()
+                    # Scrape all URLs
+                    current_jobs, run_stats = self.scrape_all_urls()
                     
                     # Send reports
                     self.send_reports(run_stats, current_jobs)
@@ -477,24 +526,21 @@ class LinkedInScraper:
                     self.storage.save_stats()
                     
                 except Exception as e:
-                    logger.error(f"Error during scraping: {e}")
-                    self.notifier.send_error_notification(f"Scraping error: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.error(f"Error: {e}")
+                    self.notifier.send_error_notification(f"Error: {str(e)}")
                 
                 logger.info(f"\nNext check in {interval_minutes} minutes...")
-                logger.info("-" * 70)
                 
                 # Sleep
                 for _ in range(interval_minutes * 60):
                     time.sleep(1)
                 
         except KeyboardInterrupt:
-            logger.info("\n\nShutting down...")
+            logger.info("\nShutting down...")
             self.cleanup()
     
     def cleanup(self):
-        """Cleanup resources"""
+        """Cleanup"""
         logger.info("Saving data...")
         self.storage.save_tracked_jobs()
         self.storage.save_stats()

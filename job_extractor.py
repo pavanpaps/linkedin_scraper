@@ -1,6 +1,6 @@
 """
 job_extractor.py - Extract job details from LinkedIn pages
-FIXED VERSION - Correctly extracts from job details panel
+FIXED: H1-first extraction strategy (most reliable)
 """
 
 import re
@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 class JobExtractor:
-    """Extract job details from LinkedIn HTML"""
+    """Extract job details from LinkedIn HTML - supports old and new interfaces"""
     
-    def __init__(self, default_location="Bengaluru, Karnataka, India"):
+    def __init__(self, default_location="Location not specified"):
         self.default_location = default_location
     
     def extract_job_id_from_url(self, url):
@@ -28,416 +28,511 @@ class JobExtractor:
         
         return None
     
-    def extract_job_details(self, html_source, debug=False):
+    def detect_search_type(self, url):
         """
-        Extract job details from HTML source
-        
-        Args:
-            html_source: HTML source code
-            debug: Enable debug logging
-        
-        Returns:
-            Dictionary with title, company, location, and metadata
+        Detect which LinkedIn search interface is being used
         """
-        soup = BeautifulSoup(html_source, 'html.parser')
-        
-        title = self._extract_title(soup, debug)
-        company = self._extract_company(soup, title, debug)
-        location = self._extract_location(soup, debug)
-        metadata = self._extract_metadata(soup, debug)
-        
-        result = {
-            'title': title,
-            'company': company,
-            'location': location,
-        }
-        
-        if metadata:
-            result.update(metadata)
-        
-        return result
+        if '/jobs/search-results/' in url:
+            return 'new'
+        elif '/jobs/search/' in url:
+            return 'old'
+        elif 'SEMANTIC_SEARCH' in url:
+            return 'new'
+        return 'old'
     
-    def extract_from_details_panel(self, html_source, debug=False):
+    def extract_from_details_panel(self, html_source, debug=False, search_type=None):
         """
-        Extract job details from the job details panel (right side of LinkedIn search)
-        This isolates the job details panel to avoid extracting from search results
-        
-        Args:
-            html_source: Full page HTML source
-            debug: Enable debug logging
-        
-        Returns:
-            Dictionary with title, company, location
+        Extract job details from the job details panel
+        STRATEGY: H1 FIRST (most reliable), then fallback to other methods
         """
         soup = BeautifulSoup(html_source, 'html.parser')
         
-        # Find the job details panel specifically (right side panel)
-        details_panel = (
+        # Auto-detect search type if not specified
+        if not search_type:
+            if soup.find('div', class_=re.compile('job-card-job-posting')):
+                search_type = 'new'
+            elif soup.find('div', class_=re.compile('semantic-search')):
+                search_type = 'new'
+            else:
+                search_type = 'old'
+        
+        if debug:
+            logger.info(f"🔍 Detected search type: {search_type.upper()}")
+        
+        # ===== TITLE: Try H1 FIRST (most reliable) =====
+        title = self._extract_from_h1(soup, debug)
+        
+        # Fallback to artdeco only if H1 fails
+        if not title or len(title) < 5:
+            if debug:
+                logger.info("H1 failed, trying artdeco title...")
+            title = self._extract_artdeco_title(soup, debug)
+        
+        # Last resort: old-specific patterns
+        if not title or len(title) < 5:
+            if debug:
+                logger.info("Artdeco failed, trying old-specific patterns...")
+            details_panel = self._find_details_panel(soup)
+            title = self._extract_title_old_specific(details_panel, soup, debug)
+        
+        # ===== COMPANY: Try multiple methods (artdeco can be stale) =====
+        details_panel = self._find_details_panel(soup)
+        
+        # Try old-specific FIRST (more reliable for company)
+        company = self._extract_company_old_specific(details_panel, debug)
+        
+        # Fallback to artdeco if old-specific fails
+        if not company:
+            company = self._extract_artdeco_company(soup, debug)
+        
+        # ===== LOCATION: Artdeco + fallbacks =====
+        location = self._extract_artdeco_location(soup, debug)
+        if not location:
+            location = self._extract_location_old_specific(details_panel, debug)
+        
+        return {
+            'title': title or "Title not found",
+            'company': company or "Not specified",
+            'location': location or self.default_location,
+        }
+    
+    def _find_details_panel(self, soup):
+        """Find the job details panel container"""
+        return (
             soup.find('div', class_='jobs-details__main-content') or
             soup.find('section', class_='jobs-details__main-content') or
             soup.find('div', class_='jobs-unified-top-card') or
             soup.find('div', class_='job-details-jobs-unified-top-card') or
-            soup.find('div', id='job-details')
+            soup.find('div', class_=re.compile('job-card-job-posting-card-wrapper')) or
+            soup.find('div', class_=re.compile('job-posting-card')) or
+            soup
         )
-        
-        if not details_panel:
-            if debug:
-                logger.warning("Could not find job details panel - using full page")
-            # Fallback to full page extraction
-            details_panel = soup
-        else:
-            if debug:
-                logger.debug("✓ Found job details panel")
-        
-        # Extract from the isolated panel
-        title = self._extract_title(details_panel, debug)
-        company = self._extract_company(details_panel, title, debug)
-        location = self._extract_location(details_panel, debug)
-        metadata = self._extract_metadata(details_panel, debug)
-        
-        result = {
-            'title': title,
-            'company': company,
-            'location': location,
-        }
-        
-        if metadata:
-            result.update(metadata)
-        
-        return result
     
-    def extract_from_job_card(self, card_element, debug=False):
-        """
-        Extract job details from a single job card element in search results
-        
-        Args:
-            card_element: BeautifulSoup element of the job card
-            debug: Enable debug logging
-        
-        Returns:
-            Dictionary with title, company, location
-        """
-        if isinstance(card_element, str):
-            card_element = BeautifulSoup(card_element, 'html.parser')
-        
-        title = self._extract_title(card_element, debug)
-        company = self._extract_company(card_element, title, debug, is_job_card=True)
-        location = self._extract_location(card_element, debug)
-        
-        return {
-            'title': title,
-            'company': company,
-            'location': location,
-        }
+    # ========== H1 EXTRACTOR (MOST RELIABLE - USE FIRST!) ==========
     
-    def _extract_title(self, soup, debug=False):
-        """Extract job title"""
-        # Strategy 1: artdeco-entity-lockup__title
+    def _extract_from_h1(self, soup, debug=False):
+        """
+        Extract title from H1 tag - MOST RELIABLE METHOD
+        This should ALWAYS be tried first!
+        """
+        # Find all H1 tags
+        h1_tags = soup.find_all('h1', limit=10)
+        
+        for h1 in h1_tags:
+            text = h1.get_text(separator=' ', strip=True)
+            
+            # Clean the text
+            text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+            text = ' '.join(text.split())
+            text = self._clean_title_text(text)
+            
+            # Validate it's a real job title
+            if self._is_valid_job_title(text):
+                if debug:
+                    logger.debug(f"✓ Title (H1): {text[:60]}")
+                return text
+        
+        if debug:
+            logger.debug("⚠ No valid H1 title found")
+        return None
+    
+    # ========== ARTDECO EXTRACTORS ==========
+    
+    def _extract_artdeco_title(self, soup, debug=False):
+        """Extract title from artdeco structure - USE ONLY AS FALLBACK"""
         title_elem = soup.find('div', class_='artdeco-entity-lockup__title')
-        if title_elem:
-            ltr_div = title_elem.find('div', {'dir': 'ltr'})
-            if ltr_div:
-                title = ltr_div.text.strip()
-                if title:
-                    if debug:
-                        logger.debug(f"✓ Found title: {title[:50]}")
-                    return title
+        if not title_elem:
+            if debug:
+                logger.debug("⚠ No artdeco title element found")
+            return None
         
-        # Strategy 2: Common title selectors
-        title_selectors = [
-            ('h1', {'class_': 'job-details-jobs-unified-top-card__job-title'}),
-            ('h1', {'class_': 'jobs-unified-top-card__job-title'}),
-            ('h2', {'class_': 't-24 t-bold'}),
-            ('h1', {'class_': 't-24'}),
-            ('h1', {'class_': 'topcard__title'}),
-        ]
+        # Try aria-label first
+        aria_label = title_elem.get('aria-label', '')
+        if aria_label:
+            text = re.sub(r'<!--.*?-->', '', aria_label, flags=re.DOTALL).strip()
+            text = self._clean_title_text(text)
+            if self._is_valid_job_title(text):
+                if debug:
+                    logger.debug(f"✓ Title (artdeco aria): {text[:60]}")
+                return text
         
-        for tag, attrs in title_selectors:
-            title_elem = soup.find(tag, attrs)
-            if title_elem:
-                title = title_elem.text.strip()
-                if title:
-                    if debug:
-                        logger.debug(f"✓ Found title from {tag}: {title[:50]}")
-                    return title
+        # Try direct text
+        text = title_elem.get_text(separator=' ', strip=True)
+        text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+        text = ' '.join(text.split())
+        text = self._clean_title_text(text)
         
-        # Strategy 3: Generic h1/h2
-        for tag in ['h1', 'h2']:
-            elem = soup.find(tag)
+        if self._is_valid_job_title(text):
+            if debug:
+                logger.debug(f"✓ Title (artdeco): {text[:60]}")
+            return text
+        
+        # Try nested elements
+        for tag in ['h1', 'h2', 'a']:
+            elem = title_elem.find(tag)
             if elem:
-                text = elem.text.strip()
-                if text and len(text) > 3:
+                text = elem.get_text(strip=True)
+                text = self._clean_title_text(text)
+                if self._is_valid_job_title(text):
                     if debug:
-                        logger.debug(f"✓ Found title from {tag}: {text[:50]}")
+                        logger.debug(f"✓ Title (artdeco {tag}): {text[:60]}")
                     return text
         
         if debug:
-            logger.warning("⚠ Could not extract job title")
+            logger.warning("⚠ Could not extract title (artdeco)")
         return None
     
-    def _extract_company(self, soup, title, debug=False, is_job_card=False):
-        """Extract company name"""
-        company = None
-        
-        # Strategy 1: artdeco-entity-lockup__subtitle (most reliable)
+    def _extract_artdeco_company(self, soup, debug=False):
+        """Extract company from artdeco structure"""
         subtitle_elem = soup.find('div', class_='artdeco-entity-lockup__subtitle')
         if subtitle_elem:
             ltr_div = subtitle_elem.find('div', {'dir': 'ltr'})
             if ltr_div:
-                text = ltr_div.text.strip()
-                text = text.replace('<!--', '').replace('-->', '').strip()
-                if text and len(text) > 1:
-                    company = text
-                    if debug:
-                        logger.debug(f"✓ Found company from artdeco subtitle: {company}")
-        
-        # Strategy 2: Other subtitle patterns
-        if not company:
-            subtitle_patterns = [
-                'job-details-jobs-unified-top-card__company-name',
-                'jobs-unified-top-card__company-name',
-                'job-card-job-posting-card-wrapper__subtitle',
-                'jobs-unified-top-card__subtitle-primary-grouping',
-                'job-card-container__primary-description'
-            ]
+                text = ltr_div.get_text(strip=True)
+            else:
+                text = subtitle_elem.get_text(separator=' ', strip=True)
             
-            for pattern in subtitle_patterns:
-                elem = soup.find(['div', 'span', 'a'], class_=lambda x: x and pattern in str(x))
-                if elem:
-                    # Try to find nested dir="ltr" first
-                    ltr_div = elem.find('div', {'dir': 'ltr'})
-                    text = ltr_div.text.strip() if ltr_div else elem.text.strip()
-                    text = text.replace('<!--', '').replace('-->', '').strip()
-                    
-                    # Clean up text that might have location info
-                    if '·' in text:
-                        text = text.split('·')[0].strip()
-                    elif '•' in text:
-                        text = text.split('•')[0].strip()
-                    
-                    if text and 2 < len(text) < 100:
-                        company = text
-                        if debug:
-                            logger.debug(f"✓ Found company from {pattern}: {company}")
-                        break
-        
-        # Strategy 3: Company link
-        if not company:
-            company_elem = (
-                soup.find('a', class_='topcard__org-name-link') or
-                soup.find('a', {'data-tracking-control-name': 'public_jobs_topcard-org-name'}) or
-                soup.find('a', href=lambda x: x and '/company/' in str(x))
-            )
+            text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+            text = self._clean_company_name(text)
             
-            if company_elem:
-                text = company_elem.text.strip()
-                if text and len(text) > 1:
-                    company = text
-                    if debug:
-                        logger.debug(f"✓ Found company from link: {company}")
+            if text and text != "Not specified":
+                if debug:
+                    logger.debug(f"✓ Company (artdeco): {text}")
+                return text
         
-        # Strategy 4: Search dir="ltr" divs (last resort)
-        if not company:
-            ltr_divs = soup.find_all('div', {'dir': 'ltr'}, limit=20)
-            for ltr_div in ltr_divs:
-                text = ltr_div.text.strip().replace('<!--', '').replace('-->', '').strip()
-                
-                if text and 2 < len(text) < 100:
-                    # Skip if it's the title
-                    if title and text.lower() == title.lower():
-                        continue
-                    
-                    # Skip locations (multiple commas or work type keywords)
-                    if text.count(',') >= 2 or any(word in text for word in ['On-site', 'Remote', 'Hybrid']):
-                        continue
-                    
-                    # Skip UI text
-                    if text.lower() in ['apply', 'save', 'share', 'show more', 'show less', 'see more', 'see less']:
-                        continue
-                    
-                    company = text
-                    if debug:
-                        logger.debug(f"✓ Found company from dir=ltr: {company}")
-                    break
-        
-        # Clean up and validate
-        if company:
-            company = self._clean_company_name(company)
-        
-        if not company:
-            company = "Not specified"
-            if debug:
-                logger.warning("⚠ Could not extract company name")
-        else:
-            if debug:
-                logger.info(f"✅ Final company: {company}")
-        
-        return company
+        if debug:
+            logger.debug("⚠ Could not extract company (artdeco)")
+        return None
     
-    def _clean_company_name(self, company):
-        """Clean and normalize company name"""
-        if not company:
-            return "Not specified"
-        
-        # Remove extra whitespace
-        company = ' '.join(company.split())
-        
-        # Remove common separators and extra text
-        company = company.split('·')[0].strip()
-        company = company.split('•')[0].strip()
-        company = company.split('\n')[0].strip()
-        company = company.rstrip('.,;:')
-        
-        # Validate
-        if len(company) < 2 or company.lower() in ['hiring', 'new', 'jobs', 'apply']:
-            return "Not specified"
-        
-        return company
-    
-    def _extract_location(self, soup, debug=False):
-        """Extract job location"""
-        location = None
-        
-        # Strategy 1: artdeco-entity-lockup__caption (most reliable)
+    def _extract_artdeco_location(self, soup, debug=False):
+        """Extract location from artdeco structure"""
         caption_elem = soup.find('div', class_='artdeco-entity-lockup__caption')
         if caption_elem:
             ltr_div = caption_elem.find('div', {'dir': 'ltr'})
             if ltr_div:
-                text = ltr_div.text.strip()
-                text = text.replace('<!--', '').replace('-->', '').strip()
-                # Location has commas or work type keywords
-                if text and (',' in text or any(word in text for word in ['On-site', 'Remote', 'Hybrid'])):
-                    location = text
-                    if debug:
-                        logger.debug(f"✓ Found location: {location}")
-        
-        # Strategy 2: Traditional location selectors
-        if not location:
-            location_selectors = [
-                ('span', {'class_': 'job-details-jobs-unified-top-card__bullet'}),
-                ('span', {'class_': 'jobs-unified-top-card__bullet'}),
-                ('span', {'class_': 'topcard__flavor topcard__flavor--bullet'}),
-            ]
+                text = ltr_div.get_text(strip=True)
+            else:
+                text = caption_elem.get_text(separator=' ', strip=True)
             
-            for tag, attrs in location_selectors:
-                location_elem = soup.find(tag, attrs)
-                if location_elem:
-                    text = location_elem.text.strip()
-                    if text and ',' in text:
-                        location = text
-                        if debug:
-                            logger.debug(f"✓ Found location from {tag}: {location}")
-                        break
-        
-        # Strategy 3: Search dir="ltr" for location-like text
-        if not location:
-            ltr_divs = soup.find_all('div', {'dir': 'ltr'}, limit=30)
-            for ltr_div in ltr_divs:
-                text = ltr_div.text.strip().replace('<!--', '').replace('-->', '').strip()
-                # Location has commas or work type indicators
-                if text and (',' in text or any(word in text for word in ['On-site', 'Remote', 'Hybrid'])):
-                    if 5 < len(text) < 150:
-                        location = text
-                        if debug:
-                            logger.debug(f"✓ Found location from dir=ltr: {location}")
-                        break
-        
-        # Fallback to default
-        if not location:
-            location = self.default_location
+            # Clean HTML comments and whitespace
+            text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+            text = ' '.join(text.split())
+            
             if debug:
-                logger.debug(f"Using default location: {location}")
-        
-        return location
-    
-    def _extract_metadata(self, soup, debug=False):
-        """Extract additional job metadata"""
-        metadata = {}
-        
-        # Extract job insights
-        insight_elem = soup.find('div', class_=lambda x: x and 'job-insight' in str(x))
-        if insight_elem:
-            insight_text = insight_elem.text.strip()
-            if insight_text:
-                metadata['insight'] = insight_text
+                logger.debug(f"Caption text found: '{text}'")
+            
+            if text and self._is_valid_location(text):
                 if debug:
-                    logger.debug(f"✓ Found insight: {insight_text[:60]}")
+                    logger.debug(f"✓ Location (artdeco): {text}")
+                return text
+            elif text and debug:
+                logger.debug(f"Caption text rejected by validation: '{text}'")
         
-        # Extract work type
-        text_content = soup.get_text()
-        for work_type in ['Remote', 'On-site', 'Hybrid']:
-            if work_type in text_content:
-                metadata['work_type'] = work_type
-                if debug:
-                    logger.debug(f"✓ Found work type: {work_type}")
-                break
-        
-        return metadata if metadata else None
+        if debug:
+            logger.debug("⚠ Could not extract location (artdeco)")
+        return None
     
-    def debug_company_extraction(self, html_source, job_id):
-        """Debug helper to show HTML structure"""
+    # ========== OLD-SPECIFIC EXTRACTORS ==========
+    
+    def _extract_title_old_specific(self, details_panel, full_soup, debug=False):
+        """Extract title from OLD interface specific patterns"""
+        if not details_panel:
+            return None
+            
+        selectors = [
+            ('h1', 'job-details-jobs-unified-top-card__job-title'),
+            ('h1', 'jobs-unified-top-card__job-title'),
+            ('h2', 't-24 t-bold'),
+            ('h1', 't-24'),
+        ]
+        
+        for tag, class_name in selectors:
+            elem = details_panel.find(tag, class_=lambda x: x and class_name in str(x))
+            if elem:
+                text = elem.get_text(strip=True)
+                text = self._clean_title_text(text)
+                if self._is_valid_job_title(text):
+                    if debug:
+                        logger.debug(f"✓ Title (old {tag}): {text[:60]}")
+                    return text
+        
+        if debug:
+            logger.debug("⚠ Could not extract title (old-specific)")
+        return None
+    
+    def _extract_company_old_specific(self, details_panel, debug=False):
+        """Extract company from OLD interface specific patterns"""
+        if not details_panel:
+            return None
+        
+        # Strategy 1: Look for /company/ links FIRST (most reliable)
+        for link in details_panel.find_all('a', href=True):
+            href = link.get('href', '')
+            if '/company/' in href:
+                text = link.get_text(strip=True)
+                text = self._clean_company_name(text)
+                if text and len(text) > 2 and text != "Not specified":
+                    if debug:
+                        logger.debug(f"✓ Company (company link): {text}")
+                    return text
+        
+        # Strategy 2: Specific class patterns
+        patterns = [
+            'job-details-jobs-unified-top-card__company-name',
+            'jobs-unified-top-card__company-name',
+            'topcard__org-name-link',
+            'job-card-container__company-name',
+        ]
+        
+        for pattern in patterns:
+            elem = details_panel.find(['a', 'span', 'div'], class_=lambda x: x and pattern in str(x))
+            if elem:
+                text = elem.get_text(strip=True)
+                text = self._clean_company_name(text)
+                if text and text != "Not specified":
+                    if debug:
+                        logger.debug(f"✓ Company (old pattern): {text}")
+                    return text
+        
+        if debug:
+            logger.debug("⚠ Could not extract company (old-specific)")
+        return None
+    
+    def _extract_location_old_specific(self, details_panel, debug=False):
+        """Extract location from OLD interface specific patterns"""
+        if not details_panel:
+            return None
+            
+        selectors = [
+            ('span', 'job-details-jobs-unified-top-card__bullet'),
+            ('span', 'jobs-unified-top-card__bullet'),
+            ('span', 'job-card-container__metadata-item'),
+        ]
+        
+        for tag, class_name in selectors:
+            elem = details_panel.find(tag, class_=lambda x: x and class_name in str(x))
+            if elem:
+                text = elem.get_text(strip=True)
+                if self._is_valid_location(text):
+                    if debug:
+                        logger.debug(f"✓ Location (old): {text}")
+                    return text
+        
+        # Try to extract work type as location
+        work_type = self._extract_work_type(details_panel)
+        if work_type:
+            if debug:
+                logger.debug(f"✓ Work type (old): {work_type}")
+            return work_type
+        
+        if debug:
+            logger.debug("⚠ Could not extract location (old-specific)")
+        return None
+    
+    # ========== VALIDATION & CLEANING ==========
+    
+    def _is_valid_job_title(self, text):
+        """Validate if text is a real job title"""
+        if not text or len(text) < 5 or len(text) > 300:
+            return False
+        
+        text_lower = text.lower()
+        
+        # Reject common non-title artifacts
+        invalid_indicators = [
+            'notification',
+            'followers',
+            'with verification',
+            'sign in',
+            'join',
+            'showing',
+            'results',
+            'filters',
+            'are these results',
+            'your profile',
+            'about the job',
+            'people you can reach',
+            'see all',
+            'company page',
+        ]
+        
+        if any(ind in text_lower for ind in invalid_indicators):
+            return False
+        
+        # Reject if it looks like a company profile
+        if self._looks_like_company_profile(text):
+            return False
+        
+        # Reject duplicate patterns like "Data Engineer IData Engineer I"
+        if re.search(r'(\w+\s+\w+)\1', text, re.IGNORECASE):
+            return False
+        
+        return True
+    
+    def _clean_title_text(self, text):
+        """Clean extracted title text"""
+        if not text:
+            return text
+        
+        # Remove common artifacts at the end
+        text = re.sub(r'with verification$', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\s+\d+[\d,]+\s+followers?$', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Finance$', '', text)  # Remove trailing "Finance" artifact
+        text = re.sub(r'TeamFinance$', ' Team', text)  # Fix "TeamFinance" -> "Team"
+        
+        # Remove duplicate patterns (e.g., "Data Engineer IData Engineer I" -> "Data Engineer I")
+        words = text.split()
+        if len(words) > 2:
+            # Check if second half duplicates first half
+            mid = len(words) // 2
+            first_half = ' '.join(words[:mid])
+            second_half = ' '.join(words[mid:mid*2])
+            if first_half.lower() == second_half.lower():
+                text = first_half
+        
+        # Normalize whitespace
+        text = ' '.join(text.split())
+        
+        return text.strip()
+    
+    def _looks_like_company_profile(self, text):
+        """Check if text looks like a company profile"""
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        indicators = [
+            'followers',
+            'verified',
+            '@ ',
+            ' is hiring',
+            'see all jobs',
+            'company page',
+        ]
+        
+        return any(ind in text_lower for ind in indicators)
+    
+    def _clean_company_name(self, company):
+        """Clean company name"""
+        if not company:
+            return "Not specified"
+        
+        company = ' '.join(company.split())
+        company = company.split('·')[0].strip()
+        company = company.split('\n')[0].strip()
+        company = company.rstrip('.,;:')
+        company = re.sub(r'\s*\(.*?\)\s*$', '', company)
+        
+        # Remove follower counts
+        company = re.sub(r'\s+\d+[\d,]+\s+followers?$', '', company, flags=re.IGNORECASE)
+        
+        if len(company) < 2:
+            return "Not specified"
+        
+        return company
+    
+    def _is_valid_location(self, text):
+        """Validate if text is a real location"""
+        if not text or len(text) < 2:
+            return False
+        
+        text_lower = text.lower()
+        
+        invalid = ['school', 'college', 'university', 'alumni', 'hiring', 
+                   'apply', 'save', 'share', 'week', 'ago', 'hour', 'day',
+                   'month', 'promoted', 'reposted', 'followers']
+        
+        if any(kw in text_lower for kw in invalid):
+            return False
+        
+        valid = [',', 'remote', 'hybrid', 'on-site', 'onsite', 'india', 
+                'bangalore', 'bengaluru', 'mumbai', 'delhi', 'hyderabad', 
+                'pune', 'chennai', 'karnataka', 'tamil nadu', 'maharashtra']
+        
+        if any(kw in text_lower for kw in valid):
+            return True
+        
+        return 5 < len(text) < 150
+    
+    def _extract_work_type(self, soup):
+        """Extract work type"""
+        if not soup:
+            return None
+        text = soup.get_text()
+        for work_type in ['Remote', 'Hybrid', 'On-site', 'Onsite']:
+            if work_type in text:
+                return work_type
+        return None
+    
+    def debug_extraction(self, html_source, job_id, current_url=None):
+        """Debug helper"""
         soup = BeautifulSoup(html_source, 'html.parser')
         
         logger.info(f"\n{'='*70}")
-        logger.info(f"🔍 DEBUG: Job extraction for {job_id}")
+        logger.info(f"🔍 DEBUG: Job {job_id}")
+        
+        search_type = self.detect_search_type(current_url) if current_url else 'unknown'
+        logger.info(f"🔍 Search Type: {search_type.upper()}")
         logger.info(f"{'='*70}")
         
-        # Check for details panel
-        details_panel = (
-            soup.find('div', class_='jobs-details__main-content') or
-            soup.find('section', class_='jobs-details__main-content') or
-            soup.find('div', class_='jobs-unified-top-card') or
-            soup.find('div', class_='job-details-jobs-unified-top-card')
-        )
+        try:
+            filename = f'debug_job_{job_id}_{search_type}.html'
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(soup.prettify())
+            logger.info(f"💾 Saved: {filename}")
+        except Exception as e:
+            logger.warning(f"Could not save HTML: {e}")
         
-        if details_panel:
-            logger.info("✅ Found job details panel")
-            soup = details_panel  # Focus on details panel
+        logger.info("\n📋 H1 Tags:")
+        h1_tags = soup.find_all('h1', limit=10)
+        if h1_tags:
+            for h1 in h1_tags:
+                text = h1.get_text(strip=True)
+                logger.info(f"  • {text[:70]}")
         else:
-            logger.warning("⚠ No details panel found - analyzing full page")
+            logger.info("  ❌ No H1 tags found")
         
-        logger.info("\n📊 Artdeco Structure:")
+        logger.info("\n📋 ARTDECO Structure:")
         
-        # Title
         title_elem = soup.find('div', class_='artdeco-entity-lockup__title')
         if title_elem:
-            logger.info("  ✅ Title element found")
-            ltr_div = title_elem.find('div', {'dir': 'ltr'})
-            if ltr_div:
-                logger.info(f"     {ltr_div.text.strip()[:60]}")
+            logger.info(f"  ✅ Title: {title_elem.get_text(strip=True)[:60]}")
         else:
-            logger.info("  ❌ No title element")
+            logger.info(f"  ❌ No artdeco title")
         
-        # Company (subtitle)
         subtitle_elem = soup.find('div', class_='artdeco-entity-lockup__subtitle')
         if subtitle_elem:
-            logger.info("  ✅ Subtitle (company) found")
-            ltr_div = subtitle_elem.find('div', {'dir': 'ltr'})
-            if ltr_div:
-                logger.info(f"     {ltr_div.text.strip()}")
+            logger.info(f"  ✅ Subtitle: {subtitle_elem.get_text(strip=True)[:60]}")
         else:
-            logger.info("  ❌ No subtitle element")
+            logger.info(f"  ❌ No artdeco subtitle")
         
-        # Location (caption)
         caption_elem = soup.find('div', class_='artdeco-entity-lockup__caption')
         if caption_elem:
-            logger.info("  ✅ Caption (location) found")
-            ltr_div = caption_elem.find('div', {'dir': 'ltr'})
-            if ltr_div:
-                logger.info(f"     {ltr_div.text.strip()}")
+            logger.info(f"  ✅ Caption: {caption_elem.get_text(strip=True)[:60]}")
         else:
-            logger.info("  ❌ No caption element")
+            logger.info(f"  ❌ No artdeco caption")
         
-        # Show all dir="ltr" divs
-        ltr_divs = soup.find_all('div', {'dir': 'ltr'}, limit=10)
-        if ltr_divs:
-            logger.info(f"\n📍 Found {len(ltr_divs)} dir=ltr elements:")
-            for i, div in enumerate(ltr_divs, 1):
-                text = div.text.strip().replace('<!--', '').replace('-->', '').strip()
-                if text:
-                    parent_class = div.parent.get('class', []) if div.parent else []
-                    logger.info(f"  {i}. {text[:70]}")
-                    if parent_class:
-                        logger.info(f"     Parent: {parent_class}")
+        logger.info("\n📋 Company Links (/company/):")
+        company_links = soup.find_all('a', href=lambda x: x and '/company/' in x, limit=10)
+        if company_links:
+            for i, link in enumerate(company_links, 1):
+                text = link.get_text(strip=True)
+                href = link.get('href', '')[:50]
+                logger.info(f"  {i}. {text[:50]} → {href}")
+        else:
+            logger.info("  ❌ No company links found")
         
-        logger.info(f"{'='*70}\n")
+        logger.info("\n📋 Company Name Classes:")
+        patterns = [
+            'job-details-jobs-unified-top-card__company-name',
+            'jobs-unified-top-card__company-name',
+            'topcard__org-name-link',
+        ]
+        for pattern in patterns:
+            elem = soup.find(['a', 'span', 'div'], class_=lambda x: x and pattern in str(x))
+            if elem:
+                logger.info(f"  ✅ {pattern}: {elem.get_text(strip=True)[:50]}")
+            else:
+                logger.info(f"  ❌ {pattern}: not found")
+        
+        logger.info(f"\n{'='*70}\n")

@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Scraper Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: white;
+            padding: 24px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+
+        .status-dot.active {
+            background: #10b981;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .stat-card h3 {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #888;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+
+        .stat-card .value {
+            font-size: 32px;
+            font-weight: 600;
+            color: #000;
+        }
+
+        .section {
+            background: white;
+            border: 1px solid #e0e0e0;
+            margin-bottom: 20px;
+        }
+
+        .section-header {
+            padding: 20px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .section-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .section-content {
+            padding: 20px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        button, select, input[type="text"] {
+            padding: 8px 16px;
+            border: 1px solid #ddd;
+            background: white;
+            font-size: 14px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        button:hover {
+            background: #f5f5f5;
+        }
+
+        button:active {
+            background: #e0e0e0;
+        }
+
+        select {
+            cursor: pointer;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #000;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            font-weight: 500;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #888;
+            padding: 12px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        td {
+            padding: 16px 12px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 14px;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .company-tag {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #f0f0f0;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .job-title {
+            font-weight: 500;
+            color: #000;
+        }
+
+        .apply-link {
+            color: #000;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .apply-link:hover {
+            text-decoration: underline;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .company-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 1px;
+            background: #e0e0e0;
+            border: 1px solid #e0e0e0;
+        }
+
+        .company-item {
+            background: white;
+            padding: 16px;
+        }
+
+        .company-item .name {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .company-item .count {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .meta {
+            font-size: 12px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>LinkedIn Job Scraper</h1>
+        <div class="status">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Loading...</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Stats -->
+        <div class="stats">
+            <div class="stat-card">
+                <h3>Total Jobs</h3>
+                <div class="value" id="total-jobs">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Companies</h3>
+                <div class="value" id="total-companies">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Today</h3>
+                <div class="value" id="jobs-today">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Notified</h3>
+                <div class="value" id="total-notifications">-</div>
+            </div>
+        </div>
+
+        <!-- Companies -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Top Companies</h2>
+            </div>
+            <div class="section-content">
+                <div class="company-grid" id="companies-list">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Jobs -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Recent Jobs</h2>
+            </div>
+            <div class="section-content">
+                <div class="controls">
+                    <button onclick="loadRecentJobs()">Refresh</button>
+                    <select id="sort-select" onchange="loadRecentJobs()">
+                        <option value="first_seen-desc">Newest First</option>
+                        <option value="first_seen-asc">Oldest First</option>
+                        <option value="company-asc">Company A-Z</option>
+                        <option value="title-asc">Title A-Z</option>
+                    </select>
+                    <input type="text" id="search-input" placeholder="Search jobs..." onkeyup="searchJobs()">
+                </div>
+                <div id="jobs-container">
+                    <div class="loading">Loading jobs...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Runs -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Recent Scrape Runs</h2>
+            </div>
+            <div class="section-content">
+                <div id="runs-container">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Load stats
+        function loadStats() {
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('total-jobs').textContent = data.total_jobs;
+                        document.getElementById('total-companies').textContent = data.total_companies;
+                        document.getElementById('jobs-today').textContent = data.jobs_today;
+                        document.getElementById('total-notifications').textContent = data.total_notifications;
+
+                        // Update status
+                        const statusDot = document.getElementById('status-dot');
+                        const statusText = document.getElementById('status-text');
+                        
+                        if (data.scraper_running) {
+                            statusDot.classList.add('active');
+                            statusText.textContent = 'Scraper Running';
+                        } else {
+                            statusDot.classList.remove('active');
+                            statusText.textContent = 'Scraper Stopped';
+                        }
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        // Load jobs
+        function loadRecentJobs() {
+            const sortSelect = document.getElementById('sort-select');
+            const [sortBy, order] = sortSelect.value.split('-');
+            
+            fetch(`/api/recent-jobs?limit=50&sort=${sortBy}&order=${order}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.jobs.length > 0) {
+                        let html = '<table><thead><tr>';
+                        html += '<th>Title</th><th>Company</th><th>Location</th><th>Found</th><th></th>';
+                        html += '</tr></thead><tbody>';
+
+                        data.jobs.forEach(job => {
+                            const date = new Date(job.first_seen).toLocaleDateString();
+                            html += `<tr>
+                                <td><span class="job-title">${job.title}</span></td>
+                                <td><span class="company-tag">${job.company}</span></td>
+                                <td class="meta">${job.location}</td>
+                                <td class="meta">${date}</td>
+                                <td><a href="${job.url}" target="_blank" class="apply-link">Apply →</a></td>
+                            </tr>`;
+                        });
+
+                        html += '</tbody></table>';
+                        document.getElementById('jobs-container').innerHTML = html;
+                    } else {
+                        document.getElementById('jobs-container').innerHTML = '<p class="loading">No jobs found</p>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.getElementById('jobs-container').innerHTML = '<p class="loading">Error loading jobs</p>';
+                });
+        }
+
+        // Load companies
+        function loadCompanies() {
+            fetch('/api/jobs-by-company?limit=12')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.companies.length > 0) {
+                        let html = '';
+                        data.companies.forEach(company => {
+                            html += `<div class="company-item">
+                                <div class="name">${company.company}</div>
+                                <div class="count">${company.count} ${company.count === 1 ? 'job' : 'jobs'}</div>
+                            </div>`;
+                        });
+                        document.getElementById('companies-list').innerHTML = html;
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        // Load runs
+        function loadRecentRuns() {
+            fetch('/api/recent-runs')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.runs.length > 0) {
+                        let html = '<table><thead><tr>';
+                        html += '<th>Started</th><th>Duration</th><th>Found</th><th>New</th><th>Notified</th>';
+                        html += '</tr></thead><tbody>';
+
+                        data.runs.forEach(run => {
+                            const date = new Date(run.started_at).toLocaleString();
+                            const duration = formatDuration(run.duration_seconds);
+                            html += `<tr>
+                                <td class="meta">${date}</td>
+                                <td>${duration}</td>
+                                <td>${run.jobs_found}</td>
+                                <td>${run.new_jobs}</td>
+                                <td>${run.notifications_sent}</td>
+                            </tr>`;
+                        });
+
+                        html += '</tbody></table>';
+                        document.getElementById('runs-container').innerHTML = html;
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        // Format duration
+        function formatDuration(seconds) {
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            const minutes = Math.floor(seconds / 60);
+            const secs = Math.round(seconds % 60);
+            return `${minutes}m ${secs}s`;
+        }
+
+        // Search jobs
+        let searchTimeout;
+        function searchJobs() {
+            clearTimeout(searchTimeout);
+            const query = document.getElementById('search-input').value;
+
+            if (query.length < 2) {
+                loadRecentJobs();
+                return;
+            }
+
+            searchTimeout = setTimeout(() => {
+                fetch(`/api/search-jobs?q=${encodeURIComponent(query)}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success && data.jobs.length > 0) {
+                            let html = '<table><thead><tr>';
+                            html += '<th>Title</th><th>Company</th><th>Location</th><th>Found</th><th></th>';
+                            html += '</tr></thead><tbody>';
+
+                            data.jobs.forEach(job => {
+                                const date = new Date(job.first_seen).toLocaleDateString();
+                                html += `<tr>
+                                    <td><span class="job-title">${job.title}</span></td>
+                                    <td><span class="company-tag">${job.company}</span></td>
+                                    <td class="meta">${job.location}</td>
+                                    <td class="meta">${date}</td>
+                                    <td><a href="${job.url}" target="_blank" class="apply-link">Apply →</a></td>
+                                </tr>`;
+                            });
+
+                            html += '</tbody></table>';
+                            document.getElementById('jobs-container').innerHTML = html;
+                        } else {
+                            document.getElementById('jobs-container').innerHTML = '<p class="loading">No results</p>';
+                        }
+                    })
+                    .catch(error => console.error('Error:', error));
+            }, 300);
+        }
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadStats, 30000);
+
+        // Initial load
+        loadStats();
+        loadRecentJobs();
+        loadCompanies();
+        loadRecentRuns();
+    </script>
+</body>
+</html>

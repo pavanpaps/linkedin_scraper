@@ -57,7 +57,7 @@ def main():
     
     # Settings
     CHECK_INTERVAL = 10  # minutes
-    HEADLESS_MODE = True  # Set to True to hide browser
+    HEADLESS_MODE = False  # Set to True to hide browser
     USE_COOKIES = True  # Set to False to disable cookie reuse
     
     print("\n⚙️  Scraper Settings:")

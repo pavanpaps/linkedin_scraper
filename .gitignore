@@ -83,3 +83,7 @@ Desktop.ini
 # Environment variables
 .env
 .env.local
+
+.scraper.pid
+diagnose_company.py
+diagnose_duplicates.py
