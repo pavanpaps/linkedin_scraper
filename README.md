@@ -90,23 +90,6 @@ python main.py --interval 60  # Check every 60 minutes
 python main.py --headless
 ```
 
-## Project Structure
-linkedin-job-scraper/
-├── config.json              # Configuration (not in git)
-├── config.example.json      # Example configuration
-├── main.py                  # Entry point
-├── linkedin_scraper.py      # Main scraper logic
-├── job_extractor.py         # HTML parsing and extraction
-├── web_driver.py            # Selenium WebDriver management
-├── notifications.py         # Telegram notifications
-├── job_filters.py           # Job filtering logic
-├── storage.py               # JSON storage
-├── database.py              # SQLite database
-├── reports.py               # Report generation
-├── requirements.txt         # Python dependencies
-├── .gitignore              # Git ignore rules
-└── README.md               # This file
-
 ## Features Detail
 
 ### Job Filtering
