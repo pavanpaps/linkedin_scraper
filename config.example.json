@@ -1,0 +1,26 @@
+{
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+  "linkedin_email": "",
+  "linkedin_password": "",
+  "process_recommendations": true,
+  "job_config": {
+    "job_title": "Data Engineer",
+    "experience_level": "entry level junior 2 years experience",
+    "location": "Bengaluru",
+    "location_id": "105214831",
+    "time_filter": "r86400",
+    "experience_filter": "2"
+  },
+  "filters": {
+    "exclude_keywords": [
+      "senior",
+      "lead",
+      "5+ years",
+      "principal",
+      "staff"
+    ],
+    "include_keywords": [],
+    "exclude_companies": []
+  }
+}

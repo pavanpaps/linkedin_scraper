@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+linkedin-scraper-env/
+
+# SENSITIVE DATA - NEVER COMMIT THESE
+config.json
+linkedin_cookies.pkl
+*.pkl
+
+# Database
+*.db
+jobs.db
+
+# Logs
+logs/
+*.log
+scraper.log
+
+# Data Files
+tracked_jobs.json
+stats.json
+backup/
+
+# Screenshots and Debug Files
+*.png
+linkedin_debug.png
+debug_*.html
+
+# IDE and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Operating System
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+.pytest_cache/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
