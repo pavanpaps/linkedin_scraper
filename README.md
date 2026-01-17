@@ -1,151 +1,95 @@
 # LinkedIn Job Scraper
 
-An automated LinkedIn job scraper that monitors job postings and sends Telegram notifications for new opportunities.
+A robust, automated tool designed to scrape LinkedIn job postings, filter them based on custom criteria, and send real-time notifications via Telegram. This project helps job seekers automate their search process, ensuring they never miss a relevant opportunity.
 
-## Features
+## 🚀 Features
 
-- 🔍 Automated job search on LinkedIn
-- 📱 Real-time Telegram notifications
-- 🗄️ SQLite database for job tracking
-- 📊 Detailed analytics and reports
-- 🎯 Customizable filters (keywords, companies, locations)
-- 🔄 Continuous monitoring with configurable intervals
-- 🚫 Duplicate detection
-- 📈 Periodic and daily summary reports
+* **Automated Scraping**: Periodically searches LinkedIn for jobs matching your criteria.
+* **Smart Filtering**:
+    * **Required Keywords**: Only keep jobs containing specific terms (e.g., "Python", "Remote").
+    * **Excluded Keywords**: Automatically discard jobs with unwanted terms (e.g., "Senior", "Intern").
+* **Instant Notifications**: Sends alerts to your Telegram with job titles, companies, and direct application links.
+* **Duplicate Detection**: Uses a local SQLite database to track seen jobs and prevent duplicate alerts.
+* **Headless Mode**: Can run in the background (headless Chrome), making it suitable for deployment on servers or VPS.
+* **Reporting**: Includes a dashboard and reporting module to analyze scraped job data.
+* **Resiliency**: Includes process management (`pid_manager.py`) to handle cron jobs and prevent overlapping instances.
 
-## Prerequisites
+## 📂 Project Structure
 
-- Python 3.8+
-- Chrome browser
-- ChromeDriver
-- Telegram Bot Token
-- LinkedIn account
+| File | Description |
+| :--- | :--- |
+| `main.py` | Entry point. initializes the scraper, runs the job search, and triggers notifications. |
+| `config.json` | (Created from `config.example.json`) Stores credentials and search preferences. |
+| `linkedin_scraper.py` | Core logic for navigating LinkedIn and handling the browser session. |
+| `job_extractor.py` | Parses HTML to extract job details (Title, Company, Location, URL). |
+| `job_filters.py` | Applies whitelist/blacklist logic to filtered jobs. |
+| `notifications.py` | Handles Telegram API integration for sending alerts. |
+| `database.py` | Manages SQLite connection for storing job history. |
+| `web_driver.py` | Configures Selenium WebDriver (Chrome options, User-Agents). |
+| `dashboard.html` | Frontend interface for viewing job statistics and reports. |
 
-## Installation
+## 🛠️ Prerequisites
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/linkedin-job-scraper.git
-cd linkedin-job-scraper
-```
+Before you begin, ensure you have the following installed:
 
-2. Create virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+* **Python 3.8+**
+* **Google Chrome** (Latest version)
+* **ChromeDriver** (Matches your Chrome version)
+* **Telegram Bot Token**: Get this from [@BotFather](https://t.me/botfather) on Telegram.
+* **LinkedIn Account**: *Recommended to use a secondary account.*
 
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+## 📥 Installation
 
-4. Create configuration file:
-```bash
-cp config.example.json config.json
-```
+1.  **Clone the Repository**
+    ```bash
+    git clone [https://github.com/pavanpaps/linkedin_scraper.git](https://github.com/pavanpaps/linkedin_scraper.git)
+    cd linkedin_scraper
+    ```
 
-5. Edit `config.json` with your credentials and preferences
+2.  **Create a Virtual Environment**
+    ```bash
+    # Windows
+    python -m venv venv
+    .\venv\Scripts\activate
 
-## Configuration
+    # macOS/Linux
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-Edit `config.json`:
+3.  **Install Dependencies**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  **Setup Configuration**
+    Copy the example config file and edit it.
+    ```bash
+    cp config.example.json config.json
+    ```
+
+## ⚙️ Configuration
+
+Open `config.json` and update the following fields:
+
 ```json
 {
   "linkedin": {
-    "email": "your-email@example.com",
-    "password": "your-password"
+    "email": "YOUR_LINKEDIN_EMAIL",
+    "password": "YOUR_LINKEDIN_PASSWORD"
   },
   "telegram": {
-    "bot_token": "your-bot-token",
-    "chat_id": "your-chat-id"
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID"
   },
   "job_search": {
-    "keywords": "Data Engineer",
-    "location": "Bengaluru, Karnataka, India",
-    "time_filter": "r86400"
+    "keywords": "Data Scientist",
+    "location": "New York, USA",
+    "time_filter": "r86400" 
   },
   "filters": {
-    "required_keywords": ["python", "data"],
-    "excluded_keywords": ["senior", "lead"],
+    "required_keywords": ["python", "machine learning"],
+    "excluded_keywords": ["senior", "principal", "staff"],
     "min_notifications_per_run": 1
   }
 }
-```
-
-## Usage
-
-### Basic Usage
-```bash
-python main.py
-```
-
-### Run with custom interval
-```bash
-python main.py --interval 60  # Check every 60 minutes
-```
-
-### Headless mode
-```bash
-python main.py --headless
-```
-
-## Features Detail
-
-### Job Filtering
-- Required keywords
-- Excluded keywords
-- Company blacklist/whitelist
-- Location filtering
-
-### Notifications
-- Individual job notifications
-- Batch notifications
-- Error alerts
-- Health checks
-- Daily summaries
-
-### Database
-- Job tracking
-- Scrape run history
-- Statistics
-- Report generation
-
-## Troubleshooting
-
-### Login Issues
-- Ensure credentials are correct in `config.json`
-- LinkedIn may require manual verification
-- Check if cookies file exists
-
-### ChromeDriver Issues
-- Ensure ChromeDriver version matches Chrome browser
-- Add ChromeDriver to system PATH
-
-### No Jobs Found
-- Adjust search filters
-- Check LinkedIn search URL
-- Verify location format
-
-## Security Notes
-
-⚠️ **IMPORTANT**: Never commit these files:
-- `config.json` (contains credentials)
-- `*.pkl` files (cookies)
-- `*.db` files (contains scraped data)
-
-## Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
-
-## License
-
-This project is for educational purposes only. Please respect LinkedIn's Terms of Service.
-
-## Disclaimer
-
-This tool is for personal use only. Use responsibly and in accordance with LinkedIn's terms of service. The authors are not responsible for any misuse or violations.
